@@ -1,20 +1,37 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::process;
 use std::str;
 
+use memmap2::Mmap;
+
 fn main() {
-    let args = env::args_os();
-    if args.len() != 2 {
-        eprintln!("Usage: cargo run <data>");
+    let mut args = env::args_os();
+    if args.len() != 3 {
+        eprint!(
+            "\
+Usage: cargo run <data> <strategy>
+
+Strategies:
+    fulltext
+    memmap
+"
+        );
         process::exit(2);
     }
-    let filename = args.skip(1).next().unwrap();
-    driver1(filename.as_ref());
+    _ = args.next();
+    let filename = args.next().unwrap();
+    let strategy = args.next().unwrap();
+    match strategy.to_str() {
+        Some("fulltext") => calc_fulltext(filename.as_ref()),
+        Some("memmap") => calc_memmap(filename.as_ref()),
+        _ => panic!("Unknown strategy"),
+    }
 }
 
 #[derive(Default)]
@@ -22,12 +39,11 @@ struct ProductData {
     count: u32,
     buys: u32,
     sells: u32,
-    total_qty: u64,
+    total_qty: u32,
 }
 
-fn driver1(path: &Path) {
-    let data = fs::read(path).unwrap();
-    let mut lines = data.split(|&b| b == b'\n');
+fn calc(text: &[u8]) {
+    let mut lines = text.split(|&b| b == b'\n');
 
     let header = lines.next().unwrap();
     let mut header_len = 0;
@@ -75,9 +91,9 @@ fn driver1(path: &Path) {
             b"Sell" => data.sells += 1,
             _ => {}
         }
-        let ordqty: u64 = str::from_utf8(cols[ordqty_idx]).unwrap().parse().unwrap();
-        let wrkqty: u64 = str::from_utf8(cols[wrkqty_idx]).unwrap().parse().unwrap();
-        let excqty: u64 = str::from_utf8(cols[excqty_idx]).unwrap().parse().unwrap();
+        let ordqty: u32 = str::from_utf8(cols[ordqty_idx]).unwrap().parse().unwrap();
+        let wrkqty: u32 = str::from_utf8(cols[wrkqty_idx]).unwrap().parse().unwrap();
+        let excqty: u32 = str::from_utf8(cols[excqty_idx]).unwrap().parse().unwrap();
         data.total_qty += ordqty.max(wrkqty.max(excqty));
     }
 
@@ -93,4 +109,15 @@ fn driver1(path: &Path) {
         )
         .unwrap();
     }
+}
+
+fn calc_fulltext(path: &Path) {
+    let text = fs::read(path).unwrap();
+    calc(&text);
+}
+
+fn calc_memmap(path: &Path) {
+    let file = File::open(path).unwrap();
+    let text = unsafe { Mmap::map(&file).unwrap() };
+    calc(&text);
 }
