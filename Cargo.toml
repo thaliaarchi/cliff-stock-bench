@@ -1,0 +1,8 @@
+[package]
+name = "cliff-csv-bench"
+version = "0.1.0"
+authors = ["Thalia Archibald <thalia@archibald.dev>"]
+edition = "2021"
+description = "Implementation of Cliff Click's CSV benchmark in Rust"
+
+[dependencies]
