@@ -6,4 +6,5 @@ edition = "2021"
 description = "Implementation of Cliff Click's CSV benchmark in Rust"
 
 [dependencies]
+hashbrown = "0.14"
 memmap2 = "0.9"

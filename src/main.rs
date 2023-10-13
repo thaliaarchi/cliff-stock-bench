@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process;
 use std::str;
+use std::time::Instant;
 
 use memmap2::Mmap;
 
@@ -13,11 +14,12 @@ fn main() {
     if args.len() != 3 {
         eprint!(
             "\
-Usage: cargo run <data> <strategy>
+Usage: cargo run --release <data> <strategy>
 
 Strategies:
     fulltext
-    memmap
+    memmap-ref
+    memmap-clone
 "
         );
         process::exit(2);
@@ -25,25 +27,34 @@ Strategies:
     _ = args.next();
     let filename = args.next().unwrap();
     let strategy = args.next().unwrap();
+    let start = Instant::now();
     match strategy.to_str() {
         Some("fulltext") => calc_fulltext(filename.as_ref()),
-        Some("memmap") => calc_memmap(filename.as_ref()),
+        Some("memmap-ref") => calc_memmap_ref(filename.as_ref()),
+        Some("memmap-clone") => calc_memmap_clone(filename.as_ref()),
         _ => panic!("Unknown strategy"),
     }
+    println!("Elapsed: {:?}", start.elapsed());
 }
 
 fn calc_fulltext(path: &Path) {
     let text = fs::read(path).unwrap();
-    calc(&text);
+    calc_key_ref(&text);
 }
 
-fn calc_memmap(path: &Path) {
+fn calc_memmap_ref(path: &Path) {
     let file = File::open(path).unwrap();
     let text = unsafe { Mmap::map(&file).unwrap() };
-    calc(&text);
+    calc_key_ref(&text);
 }
 
-fn calc(text: &[u8]) {
+fn calc_memmap_clone(path: &Path) {
+    let file = File::open(path).unwrap();
+    let text = unsafe { Mmap::map(&file).unwrap() };
+    calc_key_clone(&text);
+}
+
+fn calc_key_ref(text: &[u8]) {
     let mut lines = text.split(|&b| b == b'\n');
     let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
 
@@ -64,6 +75,31 @@ fn calc(text: &[u8]) {
 
     let mut stdout = io::stdout().lock();
     for (&prod, data) in &products {
+        data.fmt(&mut stdout, prod).unwrap();
+    }
+}
+
+fn calc_key_clone(text: &[u8]) {
+    let mut lines = text.split(|&b| b == b'\n');
+    let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
+
+    let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
+    let mut cols = Vec::with_capacity(header_len);
+    for line in lines {
+        if line.len() == 0 {
+            continue;
+        }
+        cols.clear();
+        cols.extend(line.split(|&b| b == b','));
+        if cols[idx.source] != b"ToClnt" {
+            continue;
+        }
+        let prod = products.entry_ref(cols[idx.prod]).or_default();
+        prod.process_row(&cols, &idx);
+    }
+
+    let mut stdout = io::stdout().lock();
+    for (prod, data) in &products {
         data.fmt(&mut stdout, prod).unwrap();
     }
 }
