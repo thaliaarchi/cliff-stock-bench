@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process;
 use std::str;
@@ -20,6 +20,7 @@ Strategies:
     fulltext
     memmap-ref
     memmap-clone
+    read
 "
         );
         process::exit(2);
@@ -32,6 +33,7 @@ Strategies:
         Some("fulltext") => calc_fulltext(filename.as_ref()),
         Some("memmap-ref") => calc_memmap_ref(filename.as_ref()),
         Some("memmap-clone") => calc_memmap_clone(filename.as_ref()),
+        Some("read") => calc_read(filename.as_ref()),
         _ => panic!("Unknown strategy"),
     }
     println!("Elapsed: {:?}", start.elapsed());
@@ -66,11 +68,10 @@ fn calc_key_ref(text: &[u8]) {
         }
         cols.clear();
         cols.extend(line.split(|&b| b == b','));
-        if cols[idx.source] != b"ToClnt" {
-            continue;
+        if cols[idx.source] == b"ToClnt" {
+            let prod = products.entry(cols[idx.prod]).or_default();
+            prod.process_row(&cols, &idx);
         }
-        let prod = products.entry(cols[idx.prod]).or_default();
-        prod.process_row(&cols, &idx);
     }
 
     let mut stdout = io::stdout().lock();
@@ -91,11 +92,42 @@ fn calc_key_clone(text: &[u8]) {
         }
         cols.clear();
         cols.extend(line.split(|&b| b == b','));
-        if cols[idx.source] != b"ToClnt" {
+        if cols[idx.source] == b"ToClnt" {
+            let prod = products.entry_ref(cols[idx.prod]).or_default();
+            prod.process_row(&cols, &idx);
+        }
+    }
+
+    let mut stdout = io::stdout().lock();
+    for (prod, data) in &products {
+        data.fmt(&mut stdout, prod).unwrap();
+    }
+}
+
+fn calc_read(path: &Path) {
+    let mut file = BufReader::new(File::open(path).unwrap());
+
+    let mut line = Vec::new();
+    file.read_until(b'\n', &mut line).unwrap();
+    let (idx, header_len) = ColIndices::from_header(&line);
+
+    let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
+    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(header_len);
+    loop {
+        line.clear();
+        if file.read_until(b'\n', &mut line).unwrap() == 0 {
+            break;
+        }
+        if line.len() == 0 {
             continue;
         }
-        let prod = products.entry_ref(cols[idx.prod]).or_default();
-        prod.process_row(&cols, &idx);
+        let mut cols = cols_empty;
+        cols.extend(line.split(|&b| b == b','));
+        if cols[idx.source] == b"ToClnt" {
+            let prod = products.entry_ref(cols[idx.prod]).or_default();
+            prod.process_row(&cols, &idx);
+        }
+        cols_empty = cols.into_iter().take(0).map(|_| &[][..]).collect();
     }
 
     let mut stdout = io::stdout().lock();
