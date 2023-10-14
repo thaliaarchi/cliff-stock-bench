@@ -65,11 +65,7 @@ fn calc_key_ref<T: AsRef<[u8]>>(text: T) {
             prod.process_row(&cols, &idx);
         }
     }
-
-    let mut stdout = io::stdout().lock();
-    for (&prod, data) in &products {
-        data.fmt(&mut stdout, prod).unwrap();
-    }
+    print_products(products.iter().map(|(k, v)| (*k, v)));
 }
 
 #[inline]
@@ -90,11 +86,7 @@ fn calc_key_clone<T: AsRef<[u8]>>(text: T) {
             prod.process_row(&cols, &idx);
         }
     }
-
-    let mut stdout = io::stdout().lock();
-    for (prod, data) in &products {
-        data.fmt(&mut stdout, prod).unwrap();
-    }
+    print_products(products.iter().map(|(k, v)| (&**k, v)));
 }
 
 #[inline]
@@ -123,11 +115,7 @@ fn calc_read<R: Read>(reader: R) {
         }
         cols_empty = cols.into_iter().take(0).map(|_| &[][..]).collect();
     }
-
-    let mut stdout = io::stdout().lock();
-    for (prod, data) in &products {
-        data.fmt(&mut stdout, prod).unwrap();
-    }
+    print_products(products.iter().map(|(k, v)| (&**k, v)));
 }
 
 #[derive(Default)]
@@ -216,5 +204,13 @@ impl ProductData {
             self.sells,
             self.total_qty as f64 / self.count as f64,
         )
+    }
+}
+
+#[inline]
+fn print_products<'a>(iter: impl Iterator<Item = (&'a [u8], &'a ProductData)>) {
+    let mut stdout = io::stdout().lock();
+    for (prod, data) in iter {
+        data.fmt(&mut stdout, prod).unwrap();
     }
 }
