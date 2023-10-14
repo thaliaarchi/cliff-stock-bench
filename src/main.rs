@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process;
 use std::str;
@@ -21,6 +21,7 @@ Strategies:
     memmap-ref
     memmap-clone
     read
+    read-memmap
 "
         );
         process::exit(2);
@@ -30,34 +31,25 @@ Strategies:
     let strategy = args.next().unwrap();
     let start = Instant::now();
     match strategy.to_str() {
-        Some("fulltext") => calc_fulltext(filename.as_ref()),
-        Some("memmap-ref") => calc_memmap_ref(filename.as_ref()),
-        Some("memmap-clone") => calc_memmap_clone(filename.as_ref()),
-        Some("read") => calc_read(filename.as_ref()),
+        Some("fulltext") => calc_key_ref(fs::read(filename).unwrap()),
+        Some("memmap-ref") => calc_key_ref(memmap(filename)),
+        Some("memmap-clone") => calc_key_clone(memmap(filename)),
+        Some("read") => calc_read(File::open(filename).unwrap()),
+        Some("read-memmap") => calc_read(&*memmap(filename)),
         _ => panic!("Unknown strategy"),
     }
     println!("Elapsed: {:?}", start.elapsed());
 }
 
-fn calc_fulltext(path: &Path) {
-    let text = fs::read(path).unwrap();
-    calc_key_ref(&text);
-}
-
-fn calc_memmap_ref(path: &Path) {
+#[inline]
+fn memmap<P: AsRef<Path>>(path: P) -> Mmap {
     let file = File::open(path).unwrap();
-    let text = unsafe { Mmap::map(&file).unwrap() };
-    calc_key_ref(&text);
+    unsafe { Mmap::map(&file).unwrap() }
 }
 
-fn calc_memmap_clone(path: &Path) {
-    let file = File::open(path).unwrap();
-    let text = unsafe { Mmap::map(&file).unwrap() };
-    calc_key_clone(&text);
-}
-
-fn calc_key_ref(text: &[u8]) {
-    let mut lines = text.split(|&b| b == b'\n');
+#[inline]
+fn calc_key_ref<T: AsRef<[u8]>>(text: T) {
+    let mut lines = text.as_ref().split(|&b| b == b'\n');
     let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
 
     let mut products = HashMap::<&[u8], ProductData>::new();
@@ -80,8 +72,9 @@ fn calc_key_ref(text: &[u8]) {
     }
 }
 
-fn calc_key_clone(text: &[u8]) {
-    let mut lines = text.split(|&b| b == b'\n');
+#[inline]
+fn calc_key_clone<T: AsRef<[u8]>>(text: T) {
+    let mut lines = text.as_ref().split(|&b| b == b'\n');
     let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
@@ -104,8 +97,9 @@ fn calc_key_clone(text: &[u8]) {
     }
 }
 
-fn calc_read(path: &Path) {
-    let mut file = BufReader::new(File::open(path).unwrap());
+#[inline]
+fn calc_read<R: Read>(reader: R) {
+    let mut file = BufReader::new(reader);
 
     let mut line = Vec::new();
     file.read_until(b'\n', &mut line).unwrap();
