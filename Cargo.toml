@@ -1,9 +1,12 @@
 [package]
-name = "cliff-csv-bench"
+name = "cliff-stock-bench"
 version = "0.1.0"
 authors = ["Thalia Archibald <thalia@archibald.dev>"]
 edition = "2021"
-description = "Implementation of Cliff Click's CSV benchmark in Rust"
+description = "Implementation of Cliff Click's stock CSV benchmark in Rust"
+repository = "https://github.com/thaliaarchi/cliff-stock-bench"
+license = "Apache-2.0"
+keywords = ["benchmarking"]
 
 [dependencies]
 hashbrown = "0.14"
