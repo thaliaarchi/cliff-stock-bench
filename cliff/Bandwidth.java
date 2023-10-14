@@ -1,3 +1,5 @@
+package bw2;
+
 /* @2018 Rocket Realtime School of Programming and Performance
  *
  *  Goal: Understand the cost of (re)visiting Big Data
@@ -24,16 +26,19 @@
  *  2850767  90KL/sec  273KL/sec  494KL/sec 1097KL/sec 1331KL/sec
  *  Ratios:   0.33       1.0        1.8        4.0        4.8
  */
+import bw2.UtilUnsafe.*;
 
 import java.io.*;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 
-import java.nio.channels.AsynchronousFileChannel;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousFileChannel;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.Future;
 
+import static bw2.UtilUnsafe.UNSAFE;
+import static bw2.UtilUnsafe.fieldOffset;
 
 abstract class Bandwidth {
   public static void main( String[] args ) throws Exception {
@@ -46,20 +51,23 @@ abstract class Bandwidth {
 
   static private void main_driver( int driver, int N ) throws Exception {
     long t0 = System.nanoTime();
-    ConcurrentHashMap<Object,ProdData> prods;
+    ConcurrentHashMap<Object,ProdData> prods = null;
+    NonBlockingHashMapLong<ProdData> prods_l = null;
     switch( driver ) {
     case 1: prods = driver1(N); break;
     case 2: prods = driver2(N); break;
     case 3: prods = driver3(N); break;
     case 4: prods = driver4(N); break;
     case 5: prods = driver5(N); break;
-    case 6: prods = driver6(N); break;
+    case 6: prods_l = driver6(N); break;
     default: throw unimpl();
     }
     long t1 = System.nanoTime();
-    System.out.println(prods);
-    long lines = prods.get(",meta")._cnt;
-    long bytes = prods.get(",meta")._tot_qty;
+    if( prods!=null ) System.out.println(prods);
+    else System.out.println(prods_l);
+    ProdData meta = prods!=null ? prods.get(",meta") : prods_l.get(str2long(",meta"));
+    long lines = meta._cnt;
+    long bytes = meta._tot_qty;
     double secs = (double)(t1-t0)/1e9;
     System.out.printf("driver%d: %6.0f lines/sec; %6.2f Mbytes/sec; %d lines; %6.3f secs\n",
                       driver,lines/secs,(bytes/1e6/secs), lines, secs);
@@ -193,9 +201,6 @@ abstract class Bandwidth {
   private static boolean filter( Str source ) {
     return source.equals("ToClnt");
   }
-  private static boolean filter( DStr source ) {
-    return source.equals("ToClnt");
-  }
 
   
   // Struct to hold stats per-product.  In an actual application about 200
@@ -203,6 +208,7 @@ abstract class Bandwidth {
   static class ProdData {
     String _product;
     ProdData( Object prod ) { _product = prod.toString(); }
+    ProdData( long  xprod ) { _product = long2str(xprod); }
     long _cnt;                  // Count of records
     int _buys, _sells;          // Buy/Sell transactions
     long _tot_qty;              // Just the max qtys, totaled for an average
@@ -217,9 +223,9 @@ abstract class Bandwidth {
       if( bs.equals("Buy" ) ) _buys++;
       if( bs.equals("Sell") ) _sells++;
     }
-    void buy_sell( DStr bs ) {
-      if( bs.equals("Buy" ) ) _buys++;
-      if( bs.equals("Sell") ) _sells++;
+    void buy_sell( boolean buy ) {
+      if( buy ) _buys++;
+      else      _sells++;
     }
     
     void max_qty( String ordqty, String wrkqty, String excqty ) {
@@ -238,11 +244,7 @@ abstract class Bandwidth {
       // Total qty involved in the order
       _tot_qty += Math.max(ord,Math.max(wrk,exc));
     }
-    void max_qty( DStr ordqty, DStr wrkqty, DStr excqty ) {
-      // Max order/work/exec qty
-      int ord = ordqty.parseInt();
-      int wrk = wrkqty.parseInt();
-      int exc = excqty.parseInt();
+    void max_qty( int ord, int wrk, int exc ) {
       // Total qty involved in the order
       _tot_qty += Math.max(ord,Math.max(wrk,exc));
     }
@@ -252,7 +254,7 @@ abstract class Bandwidth {
   }
 
   // --- CSV Reader
-  private static File file() { return new File("ANON0.csv"); }
+  private static File file() { return new File("ANON2.csv"); }
   //private static File file() { return new File("ANON1.csv"); }
   
   static class CSV {
@@ -477,41 +479,184 @@ abstract class Bandwidth {
     }
   }
 
+  // ------------------------------------------------------
+  // ------------------------------------------------------
+  // Ints not Strings
+  
+  // Skipping 8 characters at a time, searching for newlines!
+  static final long ONES = 0x0101010101010101L;
+  static final long NL_MASK = ONES * ('\n');
+  static long has_zero(long x) {
+    return (x-ONES) & ~x & 0x8080808080808080L;
+  }
+  private static final int ABASE  = UNSAFE.arrayBaseOffset(byte[].class);
+
+  // This driver avoids all string allocation that happen per-Big-Data item. 
+  static private NonBlockingHashMapLong<ProdData> driver6( int N ) throws IOException {
+    NonBlockingHashMapLong<ProdData> prods = new NonBlockingHashMapLong<>();
+    long src = str2long("ToClnt");
+    long buy = str2long("Buy");
+      
+    // For each product, count records
+    try( IntCSV csv = new IntCSV(file()); ) {
+      int lines=N;
+      for( int i=0; i<N; i++ ) {
+        long src0 = csv.strcol(csv._idx_src);
+        if( src0==0 ) { lines=i; break; } // No more data
+        if( src0==src ) { // Filter on this row
+          long b_s  = csv.strcol(csv._idx_bs    );
+          int ord   = csv.intcol(csv._idx_ordqty);
+          int wrk   = csv.intcol(csv._idx_wrkqty);
+          int exc   = csv.intcol(csv._idx_excqty);
+          long prod = csv.strcol(csv._idx_prod  );
+          ProdData data = prods.get(prod);
+          if( data == null )
+            prods.put(prod, data = new ProdData(prod));
+          data.cnt();                   // Count actions
+          data.buy_sell(b_s==buy);      // Count buys and sells
+          data.max_qty(ord,wrk,exc);    // Count quantities
+        }
+        if( !csv.skipToLineStart() ) { lines=i; break; } // Skip rest of prior line; align new line
+      }
+      
+      // Add a bogus sentinel to return meta-data
+      ProdData data = new ProdData(",meta");
+      prods.put(str2long(",meta"),data);
+      data._cnt = lines;
+      data._tot_qty = csv._len;   // Total length read
+      return prods;
+    }
+  }
+    
+  
+  // ------------------------------------------------------
+  static class IntCSV extends CSV implements AutoCloseable {
+    FileInputStream _fis;
+    int _pos, _lim, _eol;
+    byte[] _buf;
+    IntCSV( File f ) throws IOException {
+      super(f);                 // Read and parse file header; 
+      _len=0;                   // Remove counts already read by super()
+      _br.close();              // Having read the headers, close the BR
+      _fis=new FileInputStream(f);
+      _buf = new byte[256*1024];
+      fill();      
+    }
+
+    @Override public void close() throws IOException { _fis.close(); }
+    
+    // Fill the bytebuffer.  Guaranteed to be large enough to hold the largest
+    // line (but maybe the line needs to be slid about to avoid a buffer crossing).
+    boolean fill() throws IOException {
+      // Copy partial line to buffer start
+      System.arraycopy(_buf,_pos,_buf,0,_lim-_pos);
+      _lim = _lim-_pos;
+      _pos = 0;
+      // Fill remaining buffer
+      while( _lim < _buf.length ) {
+        int len = _fis.read(_buf,_lim,_buf.length-_lim);
+        if( len == -1 ) return false;
+        _lim += len;
+        _len += len;
+      }
+      return true;
+    }
+
+    // Skip rest of line (guarenteed to be in the buffer).
+    // Make sure the entire next line is in buffer.
+    boolean skipToLineStart() throws IOException {
+      _col=0;                   // Reset back to column 0
+      int pos = _pos, lim=_lim; // Load pos,lim into a local variables
+      byte[] buf = _buf;        // Same for buf
+      if( _eol != 0 ) pos = _eol; // Have pre-computed line end; just skip ahead
+      else
+        // Find line end.  Guarenteed rest of line is in buffer; no buffer-end check
+        while( buf[pos++] != '\n' ) ;
+      _pos = pos;               // Set position update back in
+
+      // Test to see if the NEW line is entirely in the buffer
+      // Skip to aligned 8
+      while( pos < lim && (pos&7)!=0 && buf[pos++] != '\n' ) ;
+      // Load by size-8 chunks, and using SWAR (SIMD Words in A Register) find
+      // the next `\n` char.
+      while( pos+8 < lim && has_zero(NL_MASK ^ UNSAFE.getLong(buf,ABASE+pos))==0 )
+        pos += 8;
+      // Roll to the very next newline
+      while( pos < lim && buf[pos++] != '\n' ) ;
+      if( pos<lim ) { _eol = pos; return true; } // Have a line, record where it ends
+      _eol = 0;                                  // Do not know where line ends
+      return fill(); // Copy/compact partial line to start of buffer, and fill more into buffer
+    }
+
+    long strcol( int n ) throws IOException {
+      int cpos = skip_col(n), pos = _pos-1;
+      assert pos-cpos <= 7;
+      long x=0;
+      while( cpos < pos )
+        x = (x<<8) | _buf[--pos];
+      return x;
+    }
+    int intcol( int n ) throws IOException {
+      int cpos = skip_col(n), pos = _pos-1;
+      assert pos-cpos <= 7;
+      int x=0;
+      while( cpos < pos )
+        x = x*10 + (_buf[cpos++]-'0');
+      return x;
+    }
+    private int skip_col( int n ) throws IOException {
+      assert _col <= n;
+      int pos = _pos;           // Load pos into a local variable
+      byte[] buf = _buf;        // Same for buf
+      while( _col < n ) {
+        while( buf[pos++] != ',' ) ;
+        _col++;                 // Found a column end
+      }
+      int cpos = pos;           // Column start exclusive of ','
+      // Find the column end
+      while( buf[pos++] != ',' ) ;
+      _col++;                   // Found a column end
+      _pos = pos;               // Set position update back in
+      return cpos;
+    }
+  }
+  
   
   // ------------------------------------------------------
   // ------------------------------------------------------
   // Double-buffered file i/o
 
   // This driver avoids all string allocation that happen per-Big-Data item. 
-  static private ConcurrentHashMap<Object,ProdData> driver6( int N ) throws Exception {
-    ConcurrentHashMap<Object,ProdData> prods = new ConcurrentHashMap<>();
-    DStr src = new DStr(), sb_s = new DStr(), sord = new DStr(), swrk = new DStr(), sexc = new DStr(), sprd = new DStr();
+  static private NonBlockingHashMapLong<ProdData> driver7( int N ) throws Exception {
+    NonBlockingHashMapLong<ProdData> prods = new NonBlockingHashMapLong<>();
+    long src = str2long("ToClnt");
+    long buy = str2long("Buy");
       
     // For each product, count records
     try( DirectCSV csv = new DirectCSV(file()); ) {
       int lines=N;
       for( int i=0; i<N; i++ ) {
-        csv.rawcol(src,csv._idx_src   );
-        if( filter(src) ) { // Filter out this row
-          csv.rawcol(sb_s,csv._idx_bs    );
-          csv.rawcol(sord,csv._idx_ordqty);
-          csv.rawcol(swrk,csv._idx_wrkqty);
-          csv.rawcol(sexc,csv._idx_excqty);
-          csv.rawcol(sprd,csv._idx_prod  );
-          ProdData data = prods.get(sprd);
-          if( data == null ) {
-            prods.put(sprd.compact(), data = new ProdData(sprd));
-            sprd= new DStr();
-          }
+        long src0 = csv.strcol(csv._idx_src);
+        if( src0==0 ) { lines=i; break; } // No more data
+        if( src0==src ) { // Filter on this row
+          long b_s  = csv.strcol(csv._idx_bs    );
+          int ord   = csv.intcol(csv._idx_ordqty);
+          int wrk   = csv.intcol(csv._idx_wrkqty);
+          int exc   = csv.intcol(csv._idx_excqty);
+          long prod = csv.strcol(csv._idx_prod  );
+          ProdData data = prods.get(prod);
+          if( data == null )
+            prods.put(prod, data = new ProdData(prod));
           data.cnt();                   // Count actions
-          data.buy_sell(sb_s);          // Count buys and sells
-          data.max_qty(sord,swrk,sexc); // Count quantities
+          data.buy_sell(b_s==buy);      // Count buys and sells
+          data.max_qty(ord,wrk,exc);    // Count quantities
         }
         if( !csv.skipToLineStart() ) { lines=i; break; } // Skip rest of prior line; align new line
       }
       
       // Add a bogus sentinel to return meta-data
-      ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+      ProdData data = new ProdData(",meta");
+      prods.put(str2long(",meta"),data);
       data._cnt = lines;
       data._tot_qty = csv._len;   // Total length read
       return prods;
@@ -520,7 +665,7 @@ abstract class Bandwidth {
 
   // ------------------------------------------------------
   static class DirectCSV extends CSV implements AutoCloseable {
-    static final int BUFSIZE = 8*1024;
+    static final int BUFSIZE = 16*1024;
     AsynchronousFileChannel _chan;
     long _filepos;
     int _pos, _lim, _eol;
@@ -551,113 +696,98 @@ abstract class Bandwidth {
     // Fill the bytebuffer.  Guaranteed to be large enough to hold the largest
     // line.  Partial bits from the current DBB have been copied out as needed,
     // since this call will flip to a new DBB, and wipe out the current one.
-    boolean fill() throws Exception {
-      Future<Integer> f = _future;
-      _future = _chan.read(_b ? _buf1 : _buf0, _filepos );
+    ByteBuffer fill() throws Exception {
+      Future<Integer> f = _future;  
+      ByteBuffer buf_to_fill = _b ? _buf1 : _buf0;
+      ByteBuffer buf_to_read = _b ? _buf0 : _buf1;
+      buf_to_fill.clear();
+      _future = _chan.read(buf_to_fill, _filepos );
       _filepos += BUFSIZE;      // Advance
       _b = !_b;                 // Flip active buffer
       int len = f.get();        // Block and get #loaded
-      (_b ? _buf1 : _buf0).flip();
-      return len != -1;         // -1 means EOF
+      _len += len;
+      buf_to_read.flip();
+      return len == -1 ? null : buf_to_read; // -1 means EOF
     }
       
     // Skip rest of line
-    boolean skipToLineStart() throws IOException {
+    boolean skipToLineStart() throws Exception {
       _col=0;                   // Reset back to column 0
       ByteBuffer buf = _b ? _buf1 : _buf0; // Get active buffer
-      int pos = buf.position(); // Load pos   into a local variable
-      int lim = buf.limit();    // Load limit into a local variable
-      // Find line end
-      while( buf.get(pos++) != '\n' ) ;
-      buf.position(pos);
-      return true;
-    }
-
-    // Read DBB for column #N.  Might run out in the middle and have to flip buffers.
-    DStr rawcol( DStr s, int n ) throws Exception {
-      assert _col <= n;
-      ByteBuffer buf = _b ? _buf1 : _buf0; // Get active buffer
-      int pos = buf.position(); // Load pos into a local variable
-      while( _col < n ) {
-        while( buf.get(pos++) != ',' ) ;
-        _col++;                 // Found a column end
+      int pos = buf.position();
+      int lim = buf.limit();
+      while( true ) {
+        char c = (char)buf.get(pos++);
+        if( pos==lim ) {
+          if( (buf=fill())==null )
+            return false;               // Even if we got, return 0 on EOL
+          pos = buf.position();
+          lim = buf.limit();
+        }
+        if( c=='\n') {
+          buf.position(pos);
+          return true;
+        }
       }
-      int cpos = pos;           // Column start
-      // Find the column end
-      while( buf.get(pos++) != ',' ) ;
-      _col++;                   // Found a column end
-      buf.position(pos);        // Set position update back in
-      int len = pos-cpos-1;
-      return s.set(buf,cpos,len);
     }
-  }
 
-  static class DStr {
-    ByteBuffer _buf;
-    int _off,_len,_hash;
-    byte[] _bytes;
-    String _str;
-    DStr set( ByteBuffer buf, int off, int len ) {
-      _buf=buf; _off=off; _len=len; _hash=0;
-      return this;
+    long strcol(int n) throws Exception {
+      assert _col <= n;
+      while( _col < n ) {
+        if( !skipcol() ) return 0; // End of file
+        _col++;
+      }
+      // Fill a long with string bytes
+      long x=0, c;
+      int cnt=0;
+      while( (c=get())!=',' ) {
+        x = (x>>8) | (c << 56); cnt++;
+      }
+      assert cnt <= 7;
+      x >>= (8-cnt)*8;      
+      _col++;
+      return x;
     }
-    // Very inefficient
-    @Override public String toString() {
-      if( _str!=null ) return _str;
-      compact();
-      return (_str=new String(_bytes));
+    boolean skipcol() throws Exception {      
+      ByteBuffer buf = _b ? _buf1 : _buf0; // Get active buffer
+      int pos = buf.position();
+      int lim = buf.limit();
+      while( true ) {
+        char c = (char)buf.get(pos++);
+        if( pos==lim ) {
+          if( (buf=fill())==null )
+            return false;               // Even if we got, return 0 on EOL
+          pos = buf.position();
+          lim = buf.limit();
+        }
+        if( c==',') {
+          buf.position(pos);
+          return true;
+        }
+      }
     }
-    @Override public int hashCode() {
-      if( _hash!=0 ) return _hash;
-      int h = 0;
-      for( int i=_off; i<_off+_len; i++ ) h = h*31+_buf.get(i);
-      if( h==0 ) h=0xdeadbeef;
-      return (_hash=h);
-    }
-    @Override public boolean equals( Object o ) {
-      //if( this==o ) return true;
-      //if( !(o instanceof Str) ) return false;
-      //Str s = (Str)o;
-      //if( _len != s._len ) return false;
-      //for( int i=0; i<_len; i++ )
-      //  if( _buf[i+_off] != s._buf[i+s._off] )
-      //    return false;
-      //return true;
-      throw unimpl();
-    }
-    boolean equals( String s ) {
-      System.err.println(this);
-      System.err.println(s);
-      assert _bytes==null;      // After compact do equals on _bytes; before compact do it on bytebuffer
-      if( _len != s.length() ) return false;
-      for( int i=0; i<_len; i++ )
-        if( _buf.get(i+_off) != s.charAt(i) )
-          return false;
-      return true;
-    }
-    DStr compact() {
-      assert _hash!=0;
-      if( _bytes!=null ) return this;
-      _bytes = new byte[_len];
-      int old = _buf.position();
-      _buf.position(_off);
-      _buf.get(_bytes,0,_len);
-      _buf.position(old);
-      return this;
-    }
+
+    // Inline me please!
+    char get() throws Exception {
+      ByteBuffer buf = _b ? _buf1 : _buf0; // Get active buffer
+      char c = (char)buf.get();
+      if( !buf.hasRemaining() && (buf=fill())==null )
+        return 0;               // Even if we got, return 0 on EOL
+      return c;
+    }    
     
-    int parseInt() {
-      //int i=0, sum=0;
-      //boolean neg = _buf[i+_off]=='-';
-      //if( neg ) i++;
-      //while( i<_len ) {
-      //  int d = _buf[i++ +_off]-'0';
-      //  if( 0 <= d && d <= 9 )
-      //    sum = sum*10+d;
-      //  else unimpl();
-      //}
-      //return neg ? -sum : sum;
-      throw unimpl();
+    int intcol(int n) throws Exception {
+      assert _col <= n;
+      while( _col < n ) {
+        if( !skipcol() ) return 0; // End of file
+        _col++;
+      }
+      int x=0, c;
+      while( (c=get())!=',' ) {
+        x = x*10 + (c-'0');
+      }
+      _col++;
+      return x;
     }
   }
   
@@ -715,6 +845,25 @@ abstract class Bandwidth {
       }
       return neg ? -sum : sum;
     }
+  }
+
+  static long str2long( String s ) {
+    int len = s.length();
+    assert len <= 7;
+    long x=0;
+    for( int i=0; i<len; i++ )
+      x = (x<<8)|s.charAt(len-1-i);
+    return x;
+  }
+  static final StringBuilder SB = new StringBuilder();
+  static String long2str( long x ) {
+    int cnt=0;
+    SB.setLength(0);
+    while( (x&0xFF) != 0 && cnt++<8 ) {
+      SB.append((char)(x&0xFF));
+      x >>= 8;
+    }
+    return SB.toString();
   }
 
   private static RuntimeException unimpl() { return new RuntimeException("unimpl"); }
