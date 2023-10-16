@@ -29,7 +29,7 @@ package bw2;
 import bw2.UtilUnsafe.*;
 
 import java.io.*;
-import java.util.Arrays;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 import java.nio.ByteBuffer;
@@ -63,14 +63,17 @@ abstract class Bandwidth {
     default: throw unimpl();
     }
     long t1 = System.nanoTime();
-    if( prods!=null ) System.out.println(prods);
-    else System.out.println(prods_l);
-    ProdData meta = prods!=null ? prods.get(",meta") : prods_l.get(str2long(",meta"));
-    long lines = meta._cnt;
-    long bytes = meta._tot_qty;
-    double secs = (double)(t1-t0)/1e9;
-    System.out.printf("driver%d: %6.0f lines/sec; %6.2f Mbytes/sec; %d lines; %6.3f secs\n",
-                      driver,lines/secs,(bytes/1e6/secs), lines, secs);
+    //ProdData meta = prods!=null ? prods.get(",meta") : prods_l.get(str2long(",meta"));
+    //long lines = meta._cnt;
+    //long bytes = meta._tot_qty;
+    //double secs = (double)(t1-t0)/1e9;
+    //System.out.printf("driver%d: %6.0f lines/sec; %6.2f Mbytes/sec; %d lines; %6.3f secs\n",
+    //                  driver,lines/secs,(bytes/1e6/secs), lines, secs);
+    Collection<ProdData> cprods = prods==null ? prods_l.values() : prods.values();
+    //ProdData[] aprods = cprods.toArray(new ProdData[0]);
+    //Arrays.sort(aprods, (p0,p1) -> p0._product.compareTo(p1._product));
+    for( ProdData prod : cprods )
+      System.out.println(prod);
   }
 
   // ------------------------------------------------------
@@ -116,9 +119,9 @@ abstract class Bandwidth {
     }
     
     // Add a bogus sentinel to return meta-data
-    ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
-    data._cnt = lines;
-    data._tot_qty = csv._len;   // Total length read
+    //ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+    //data._cnt = lines;
+    //data._tot_qty = csv._len;   // Total length read
     return prods;
   }
   // ------------------------------------------------------
@@ -151,9 +154,9 @@ abstract class Bandwidth {
     }
     
     // Add a bogus sentinel to return meta-data
-    ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
-    data._cnt = lines;
-    data._tot_qty = csv._len;   // Total length read
+    //ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+    //data._cnt = lines;
+    //data._tot_qty = csv._len;   // Total length read
     return prods;
   }
   // ------------------------------------------------------
@@ -185,9 +188,9 @@ abstract class Bandwidth {
     }
     
     // Add a bogus sentinel to return meta-data
-    ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
-    data._cnt = lines;
-    data._tot_qty = csv._len;   // Total length read
+    //ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+    //data._cnt = lines;
+    //data._tot_qty = csv._len;   // Total length read
     return prods;
   }
   
@@ -249,7 +252,7 @@ abstract class Bandwidth {
       _tot_qty += Math.max(ord,Math.max(wrk,exc));
     }
     @Override public String toString() {
-      return String.format("%3s %d buy=%d sell=%d avg qty=%6.2f",_product,_cnt,_buys,_sells,(double)_tot_qty/_cnt);
+      return String.format("%3s cnt=%4d buy=%4d sell=%4d avg qty=%6.2f",_product,_cnt,_buys,_sells,(double)_tot_qty/_cnt);
     }
   }
 
@@ -352,9 +355,9 @@ abstract class Bandwidth {
       }
       
       // Add a bogus sentinel to return meta-data
-      ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
-      data._cnt = lines;
-      data._tot_qty = csv._len;   // Total length read
+      //ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+      //data._cnt = lines;
+      //data._tot_qty = csv._len;   // Total length read
       return prods;
     }
   }
@@ -391,9 +394,9 @@ abstract class Bandwidth {
       }
       
       // Add a bogus sentinel to return meta-data
-      ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
-      data._cnt = lines;
-      data._tot_qty = csv._len;   // Total length read
+      //ProdData data = prods.computeIfAbsent(",meta",ProdData::new);
+      //data._cnt = lines;
+      //data._tot_qty = csv._len;   // Total length read
       return prods;
     }
   }
@@ -424,7 +427,7 @@ abstract class Bandwidth {
       // Fill remaining buffer
       while( _lim < _buf.length ) {
         int len = _fis.read(_buf,_lim,_buf.length-_lim);
-        if( len == -1 ) return false;
+        if( len == -1 ) return _lim!=0;
         _lim += len;
         _len += len;
       }
@@ -520,10 +523,10 @@ abstract class Bandwidth {
       }
       
       // Add a bogus sentinel to return meta-data
-      ProdData data = new ProdData(",meta");
-      prods.put(str2long(",meta"),data);
-      data._cnt = lines;
-      data._tot_qty = csv._len;   // Total length read
+      //ProdData data = new ProdData(",meta");
+      //prods.put(str2long(",meta"),data);
+      //data._cnt = lines;
+      //data._tot_qty = csv._len;   // Total length read
       return prods;
     }
   }
@@ -555,7 +558,7 @@ abstract class Bandwidth {
       // Fill remaining buffer
       while( _lim < _buf.length ) {
         int len = _fis.read(_buf,_lim,_buf.length-_lim);
-        if( len == -1 ) return false;
+        if( len == -1 ) return _lim!=0;
         _lim += len;
         _len += len;
       }
@@ -655,10 +658,10 @@ abstract class Bandwidth {
       }
       
       // Add a bogus sentinel to return meta-data
-      ProdData data = new ProdData(",meta");
-      prods.put(str2long(",meta"),data);
-      data._cnt = lines;
-      data._tot_qty = csv._len;   // Total length read
+      //ProdData data = new ProdData(",meta");
+      //prods.put(str2long(",meta"),data);
+      //data._cnt = lines;
+      //data._tot_qty = csv._len;   // Total length read
       return prods;
     }
   }
