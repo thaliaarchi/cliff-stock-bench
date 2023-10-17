@@ -348,7 +348,7 @@ impl ProductData {
         w.write_all(prod)?;
         writeln!(
             w,
-            " {} buy={} sell={} avg qty={:6.2}",
+            " cnt={:4} buy={:4} sell={:4} avg qty={:6.2}",
             self.count,
             self.buys,
             self.sells,
