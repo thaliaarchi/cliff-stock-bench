@@ -7,7 +7,7 @@ use std::process;
 use std::str;
 use std::time::Instant;
 
-use memchr::memchr;
+use memchr::{memchr, memchr_iter};
 use memmap2::Mmap;
 
 fn main() {
@@ -38,7 +38,8 @@ Strategies:
         Some("memmap-clone") => calc_key_clone(memmap(filename)),
         Some("read") => calc_read(File::open(filename).unwrap()),
         Some("read-memmap") => calc_read(&*memmap(filename)),
-        Some("read-custom") => calc_read_custom(File::open(filename).unwrap()).unwrap(),
+        Some("read-memchr") => calc_read_memchr(File::open(filename).unwrap()),
+        Some("custom-read") => calc_custom_read(File::open(filename).unwrap()).unwrap(),
         _ => panic!("Unknown strategy"),
     }
     println!("Elapsed: {:?}", start.elapsed());
@@ -121,6 +122,61 @@ fn calc_read<R: Read>(reader: R) {
     print_products(products.iter().map(|(k, v)| (&**k, v)));
 }
 
+#[inline]
+fn calc_read_memchr<R: Read>(reader: R) {
+    let mut reader = BufReader::new(reader);
+
+    let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line).unwrap();
+    let (idx, header_len) = ColIndices::from_header(&line);
+
+    let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
+    let mut cols: Vec<usize> = Vec::with_capacity(header_len);
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).unwrap() == 0 {
+            break;
+        }
+        if line.len() == 0 {
+            continue;
+        }
+        cols.clear();
+        cols.push(usize::MAX);
+        cols.extend(memchr_iter(b',', &line));
+        cols.push(line.len());
+        if get_col(&line, &cols, idx.source) == b"ToClnt" {
+            #[inline]
+            fn parse_u32(s: &[u8]) -> u32 {
+                // SAFETY: The grammar for u32::from_str_radix is all ASCII and it
+                // parses as bytes, rejecting any non-ASCII sequences, so it handles
+                // invalid UTF-8 safely.
+                let s = unsafe { str::from_utf8_unchecked(s) };
+                s.parse().unwrap()
+            }
+
+            let prod = products
+                .entry_ref(get_col(&line, &cols, idx.prod))
+                .or_default();
+            prod.count += 1;
+            match get_col(&line, &cols, idx.bs) {
+                b"Buy" => prod.buys += 1,
+                b"Sell" => prod.sells += 1,
+                _ => {}
+            }
+            let ordqty = parse_u32(get_col(&line, &cols, idx.ordqty));
+            let wrkqty = parse_u32(get_col(&line, &cols, idx.wrkqty));
+            let excqty = parse_u32(get_col(&line, &cols, idx.excqty));
+            prod.total_qty += ordqty.max(wrkqty.max(excqty));
+        }
+    }
+    print_products(products.iter().map(|(k, v)| (&**k, v)));
+}
+
+#[inline]
+fn get_col<'a>(line: &'a [u8], cols: &[usize], col: usize) -> &'a [u8] {
+    &line[cols[col].wrapping_add(1)..cols[col + 1]]
+}
+
 struct LineReader<R> {
     reader: R,
     buf: Box<[u8; BUF_CAP]>,
@@ -177,7 +233,7 @@ impl<R: Read> LineReader<R> {
 }
 
 #[inline]
-fn calc_read_custom<R: Read>(reader: R) -> io::Result<()> {
+fn calc_custom_read<R: Read>(reader: R) -> io::Result<()> {
     let mut reader = LineReader::new(reader);
 
     let header = reader.next_line()?.unwrap();
