@@ -7,6 +7,7 @@ use std::process;
 use std::str;
 use std::time::Instant;
 
+use memchr::memchr;
 use memmap2::Mmap;
 
 fn main() {
@@ -22,6 +23,7 @@ Strategies:
     memmap-clone
     read
     read-memmap
+    read-custom
 "
         );
         process::exit(2);
@@ -36,6 +38,7 @@ Strategies:
         Some("memmap-clone") => calc_key_clone(memmap(filename)),
         Some("read") => calc_read(File::open(filename).unwrap()),
         Some("read-memmap") => calc_read(&*memmap(filename)),
+        Some("read-custom") => calc_read_custom(File::open(filename).unwrap()).unwrap(),
         _ => panic!("Unknown strategy"),
     }
     println!("Elapsed: {:?}", start.elapsed());
@@ -91,17 +94,17 @@ fn calc_key_clone<T: AsRef<[u8]>>(text: T) {
 
 #[inline]
 fn calc_read<R: Read>(reader: R) {
-    let mut file = BufReader::new(reader);
+    let mut reader = BufReader::new(reader);
 
     let mut line = Vec::new();
-    file.read_until(b'\n', &mut line).unwrap();
+    reader.read_until(b'\n', &mut line).unwrap();
     let (idx, header_len) = ColIndices::from_header(&line);
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
     let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(header_len);
     loop {
         line.clear();
-        if file.read_until(b'\n', &mut line).unwrap() == 0 {
+        if reader.read_until(b'\n', &mut line).unwrap() == 0 {
             break;
         }
         if line.len() == 0 {
@@ -116,6 +119,86 @@ fn calc_read<R: Read>(reader: R) {
         cols_empty = cols.into_iter().take(0).map(|_| &[][..]).collect();
     }
     print_products(products.iter().map(|(k, v)| (&**k, v)));
+}
+
+struct LineReader<R> {
+    reader: R,
+    buf: Box<[u8; BUF_CAP]>,
+    len: usize,
+    cur: usize,
+    line: Vec<u8>,
+}
+
+const BUF_CAP: usize = 32 * 1024;
+
+impl<R: Read> LineReader<R> {
+    fn new(reader: R) -> Self {
+        LineReader {
+            reader,
+            buf: vec![0; BUF_CAP].into_boxed_slice().try_into().unwrap(),
+            len: 0,
+            cur: 0,
+            line: Vec::with_capacity(1024),
+        }
+    }
+
+    fn next_line(&mut self) -> io::Result<Option<&[u8]>> {
+        self.line.clear();
+        loop {
+            match memchr(b'\n', &self.buf[self.cur..self.len]) {
+                Some(i) => {
+                    let line = &self.buf[self.cur..self.cur + i];
+                    self.cur += i + 1;
+                    if self.line.is_empty() {
+                        return Ok(Some(line));
+                    } else {
+                        self.line.extend_from_slice(line);
+                        return Ok(Some(&self.line));
+                    }
+                }
+                None => {
+                    self.line.extend_from_slice(&self.buf[self.cur..self.len]);
+                    self.cur = self.len;
+                }
+            }
+            if self.cur >= self.len {
+                self.len = self.reader.read(&mut self.buf[..])?;
+                self.cur = 0;
+                if self.len == 0 {
+                    if self.line.is_empty() {
+                        return Ok(None);
+                    } else {
+                        return Ok(Some(&self.line));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn calc_read_custom<R: Read>(reader: R) -> io::Result<()> {
+    let mut reader = LineReader::new(reader);
+
+    let header = reader.next_line()?.unwrap();
+    let (idx, header_len) = ColIndices::from_header(&header);
+
+    let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
+    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(header_len);
+    while let Some(line) = reader.next_line()? {
+        if line.len() == 0 {
+            continue;
+        }
+        let mut cols = cols_empty;
+        cols.extend(line.split(|&b| b == b','));
+        if cols[idx.source] == b"ToClnt" {
+            let prod = products.entry_ref(cols[idx.prod]).or_default();
+            prod.process_row(&cols, &idx);
+        }
+        cols_empty = cols.into_iter().take(0).map(|_| &[][..]).collect();
+    }
+    print_products(products.iter().map(|(k, v)| (&**k, v)));
+    Ok(())
 }
 
 #[derive(Default)]

@@ -10,4 +10,5 @@ keywords = ["benchmarking"]
 
 [dependencies]
 hashbrown = "0.14"
+memchr = "2.6"
 memmap2 = "0.9"
