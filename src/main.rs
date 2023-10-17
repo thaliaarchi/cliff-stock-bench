@@ -54,16 +54,17 @@ fn memmap<P: AsRef<Path>>(path: P) -> Mmap {
 #[inline]
 fn calc_key_ref<T: AsRef<[u8]>>(text: T) {
     let mut lines = text.as_ref().split(|&b| b == b'\n');
-    let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
+    let (idx, _header_len) = ColIndices::from_header(lines.next().unwrap());
+    let useful_cols = idx.useful_cols();
 
     let mut products = HashMap::<&[u8], ProductData>::new();
-    let mut cols = Vec::with_capacity(header_len);
+    let mut cols = Vec::with_capacity(useful_cols);
     for line in lines {
         if line.len() == 0 {
             continue;
         }
         cols.clear();
-        cols.extend(line.split(|&b| b == b','));
+        cols.extend(line.split(|&b| b == b',').take(useful_cols));
         if cols[idx.source] == b"ToClnt" {
             let prod = products.entry(cols[idx.prod]).or_default();
             prod.process_row(&cols, &idx);
@@ -75,16 +76,17 @@ fn calc_key_ref<T: AsRef<[u8]>>(text: T) {
 #[inline]
 fn calc_key_clone<T: AsRef<[u8]>>(text: T) {
     let mut lines = text.as_ref().split(|&b| b == b'\n');
-    let (idx, header_len) = ColIndices::from_header(lines.next().unwrap());
+    let (idx, _header_len) = ColIndices::from_header(lines.next().unwrap());
+    let useful_cols = idx.useful_cols();
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
-    let mut cols = Vec::with_capacity(header_len);
+    let mut cols = Vec::with_capacity(useful_cols);
     for line in lines {
         if line.len() == 0 {
             continue;
         }
         cols.clear();
-        cols.extend(line.split(|&b| b == b','));
+        cols.extend(line.split(|&b| b == b',').take(useful_cols));
         if cols[idx.source] == b"ToClnt" {
             let prod = products.entry_ref(cols[idx.prod]).or_default();
             prod.process_row(&cols, &idx);
@@ -99,10 +101,11 @@ fn calc_read<R: Read>(reader: R) {
 
     let mut line = Vec::new();
     reader.read_until(b'\n', &mut line).unwrap();
-    let (idx, header_len) = ColIndices::from_header(&line);
+    let (idx, _header_len) = ColIndices::from_header(&line);
+    let useful_cols = idx.useful_cols();
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
-    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(header_len);
+    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(useful_cols);
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line).unwrap() == 0 {
@@ -112,7 +115,7 @@ fn calc_read<R: Read>(reader: R) {
             continue;
         }
         let mut cols = cols_empty;
-        cols.extend(line.split(|&b| b == b','));
+        cols.extend(line.split(|&b| b == b',').take(useful_cols));
         if cols[idx.source] == b"ToClnt" {
             let prod = products.entry_ref(cols[idx.prod]).or_default();
             prod.process_row(&cols, &idx);
@@ -128,10 +131,11 @@ fn calc_read_memchr<R: Read>(reader: R) {
 
     let mut line = Vec::new();
     reader.read_until(b'\n', &mut line).unwrap();
-    let (idx, header_len) = ColIndices::from_header(&line);
+    let (idx, _header_len) = ColIndices::from_header(&line);
+    let useful_cols = idx.useful_cols();
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
-    let mut cols: Vec<usize> = Vec::with_capacity(header_len);
+    let mut cols: Vec<usize> = Vec::with_capacity(useful_cols);
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line).unwrap() == 0 {
@@ -142,7 +146,7 @@ fn calc_read_memchr<R: Read>(reader: R) {
         }
         cols.clear();
         cols.push(usize::MAX);
-        cols.extend(memchr_iter(b',', &line));
+        cols.extend(memchr_iter(b',', &line).take(useful_cols));
         cols.push(line.len());
         if get_col(&line, &cols, idx.source) == b"ToClnt" {
             #[inline]
@@ -237,16 +241,17 @@ fn calc_custom_read<R: Read>(reader: R) -> io::Result<()> {
     let mut reader = LineReader::new(reader);
 
     let header = reader.next_line()?.unwrap();
-    let (idx, header_len) = ColIndices::from_header(&header);
+    let (idx, _header_len) = ColIndices::from_header(&header);
+    let useful_cols = idx.useful_cols();
 
     let mut products = hashbrown::HashMap::<Box<[u8]>, ProductData>::new();
-    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(header_len);
+    let mut cols_empty: Vec<&'static [u8]> = Vec::with_capacity(useful_cols);
     while let Some(line) = reader.next_line()? {
         if line.len() == 0 {
             continue;
         }
         let mut cols = cols_empty;
-        cols.extend(line.split(|&b| b == b','));
+        cols.extend(line.split(|&b| b == b',').take(useful_cols));
         if cols[idx.source] == b"ToClnt" {
             let prod = products.entry_ref(cols[idx.prod]).or_default();
             prod.process_row(&cols, &idx);
@@ -305,6 +310,12 @@ impl ColIndices {
             prod: prod_idx.unwrap(),
         };
         (indices, cols)
+    }
+
+    #[inline]
+    fn useful_cols(&self) -> usize {
+        (self.source.max(self.bs)).max(self.ordqty.max(self.wrkqty).max(self.excqty.max(self.prod)))
+            + 1
     }
 }
 
